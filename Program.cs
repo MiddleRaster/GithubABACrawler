@@ -16,9 +16,8 @@ class Program
             return;
         }
 
-        string owner = args[0];
-        string repo = args[1];
-
+        string owner  = args[0];
+        string repo   = args[1];
         string? token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
         if (string.IsNullOrEmpty(token))
         {
@@ -26,9 +25,9 @@ class Program
             return;
         }
 
-        string bugCsv   = "bugs.csv";
+        string   bugCsv = "bugs.csv";
         string otherCsv = "everything_else.csv";
-        string allCsv   = "all.csv";
+        string   allCsv = "all.csv";
 
         using var   bugWriter = new StreamWriter(  bugCsv, false, Encoding.UTF8);
         using var otherWriter = new StreamWriter(otherCsv, false, Encoding.UTF8);
@@ -43,7 +42,7 @@ class Program
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         string? cursor = null;
-        int total=0, bugCount=0, otherCount=0;
+        int total=0, bugs=0;
         bool hasNextPage = true;
         while (hasNextPage)
         {
@@ -88,38 +87,33 @@ class Program
             foreach (var issue in issues.GetProperty("nodes").EnumerateArray())
             {
                 int number = issue.GetProperty("number").GetInt32();
-                DateTime created = issue.GetProperty("createdAt").GetDateTime();
 
-                string closed = "";
+                string created = issue.GetProperty("createdAt").GetDateTime().ToString("yyyy-MM-dd HH:mm:ss");
+                string closed  = "";
                 if (issue.GetProperty("closedAt").ValueKind != JsonValueKind.Null)
-                    closed = issue.GetProperty("closedAt").GetDateTime().ToString("o");
+                    closed     = issue.GetProperty("closedAt").GetDateTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+                allWriter.WriteLine($"{number},{created},{closed}");
+                ++total;
 
                 bool isBug = false;
                 foreach (var label in issue.GetProperty("labels").GetProperty("nodes").EnumerateArray())
                 {
-                    var labelName = label.GetProperty("name").GetString();
+                    string? labelName = label.GetProperty("name").GetString();
                     if (labelName != null && labelName.Equals("bug", StringComparison.OrdinalIgnoreCase))
                     {
                         isBug = true;
+                        ++bugs;
                         break;
                     }
                 }
-
-                allWriter.WriteLine($"{number},{created:o},{closed}");
-                ++total;
                 if (isBug)
-                {
-                    bugWriter.WriteLine($"{number},{created:o},{closed}");
-                    ++bugCount;
-                }
+                    bugWriter.WriteLine($"{number},{created},{closed}");
                 else
-                {
-                    otherWriter.WriteLine($"{number},{created:o},{closed}");
-                    ++otherCount;
-                }
+                    otherWriter.WriteLine($"{number},{created},{closed}");
             }
-            Console.WriteLine($"Processed {total} issues so far ({bugCount} bugs, {otherCount} others)...");
+            Console.WriteLine($"Processed {total} issues so far ({bugs} bugs, {total-bugs} others)...");
         }
-        Console.WriteLine($"Done. Bugs: {bugCount}, Others: {otherCount}, Total: {total}");
+        Console.WriteLine($"Done. Bugs: {bugs}, Others: {total-bugs}, Total: {total}");
     }
 }
