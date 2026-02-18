@@ -1,8 +1,0 @@
-{
-  "profiles": {
-    "GithubABACrawler": {
-      "commandName": "Project",
-      "commandLineArgs": "microsoft vscode"
-    }
-  }
-}

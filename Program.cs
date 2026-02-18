@@ -10,15 +10,15 @@ class Program
 {
     static async Task Main(string[] args)
     {
-        if (args.Length < 2)
+        if (args.Length < 3)
         {
-            Console.WriteLine("Usage: crawler.exe <owner> <repo>");
+            Console.WriteLine("Usage: crawler.exe <owner> <repo> <oldestDate in yyyy-MM-dd format>");
             return;
         }
-
-        string owner  = args[0];
-        string repo   = args[1];
-        string? token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        DateTime oldest = DateTime.Parse(args[2]);
+        string owner    = args[0];
+        string repo     = args[1];
+        string? token   = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
         if (string.IsNullOrEmpty(token))
         {
             Console.WriteLine("Environment variable GITHUB_TOKEN is missing.");
@@ -43,10 +43,7 @@ class Program
 
         string? cursor = null;
         int total=0, bugs=0;
-        bool hasNextPage = true;
-        while (hasNextPage)
-        {
-            string query = @"
+        string query = @"
             query ($owner: String!, $repo: String!, $cursor: String) {
               repository(owner: $owner, name: $repo) {
                 issues(
@@ -70,7 +67,9 @@ class Program
                 }
               }
             }";
-
+        bool hasNextPage = true;
+        while (hasNextPage)
+        {
             var payload = new
             {
                 query = query,
@@ -81,14 +80,32 @@ class Program
             var response  = await http.PostAsync("https://api.github.com/graphql", content);
             string json   = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
-            var issues    = doc.RootElement.GetProperty("data").GetProperty("repository").GetProperty("issues");
-            hasNextPage   = issues.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean();
+            var root      = doc.RootElement;
+            if (root.TryGetProperty("errors", out var errs))
+            {   // Check for GraphQL errors
+                Console.WriteLine("GraphQL error:");
+                Console.WriteLine(errs.ToString());
+                return;
+            }
+            var data = root.GetProperty("data");
+            if (data.ValueKind == JsonValueKind.Null || data.GetProperty("repository").ValueKind == JsonValueKind.Null)
+            {   // Check that data.repository is not null
+                Console.WriteLine($"Repository '{owner}/{repo}' not found.");
+                return;
+            }
+            var issues    = data.GetProperty("repository").GetProperty("issues");
+            hasNextPage = issues.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean();
             cursor        = issues.GetProperty("pageInfo").GetProperty("endCursor").GetString();
             foreach (var issue in issues.GetProperty("nodes").EnumerateArray())
             {
                 int number = issue.GetProperty("number").GetInt32();
 
-                string created = issue.GetProperty("createdAt").GetDateTime().ToString("yyyy-MM-dd HH:mm:ss");
+                DateTime createdAt = issue.GetProperty("createdAt").GetDateTime();
+                if (createdAt < oldest) {
+                    hasNextPage = false;
+                    break;
+                }
+                string created = createdAt.ToString("yyyy-MM-dd HH:mm:ss");
                 string closed  = "";
                 if (issue.GetProperty("closedAt").ValueKind != JsonValueKind.Null)
                     closed     = issue.GetProperty("closedAt").GetDateTime().ToString("yyyy-MM-dd HH:mm:ss");
