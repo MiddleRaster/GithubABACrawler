@@ -4,13 +4,112 @@ using System.Text.Json;
 
 class Program
 {
-    static async Task Main(string[] args)
+    static List<string> GetLabelNames(JsonElement issue)
+    {
+        var list = new List<string>();
+        foreach (var label in issue.GetProperty("labels").GetProperty("nodes").EnumerateArray()) {
+            string? name = label.GetProperty("name").GetString();
+            if (name != null)
+                list.Add(name);
+        }
+        return list;
+    }
+    static List<string> GetIssueTypeNames(JsonElement issue)
+    {
+        var list = new List<string>();
+        var typeProp = issue.GetProperty("issueType");
+        if (typeProp.ValueKind != JsonValueKind.Null) {
+            string? name = typeProp.GetProperty("name").GetString();
+            if (name != null)
+                list.Add(name);
+        }
+        return list;
+    }
+    private static async Task DumpIssueTypes(HttpClient http, string owner, string repo)
+    {
+        Console.WriteLine($"=== IssueTypes for {owner}/{repo} ===");
+
+        string query = 
+    @"query($owner:String!, $repo:String!) {
+      repository(owner:$owner, name:$repo) {
+        issueTypes(first:50) {
+          nodes { name }
+        }
+      }
+    }";
+
+        var payload = new { query, variables = new { owner, repo } };
+        var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+        var resp    = await http.PostAsync("https://api.github.com/graphql", content);
+        resp.EnsureSuccessStatusCode();
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var nodes = doc.RootElement.GetProperty("data").GetProperty("repository").GetProperty("issueTypes").GetProperty("nodes");
+        foreach (var n in nodes.EnumerateArray())
+            Console.WriteLine($"- {n.GetProperty("name").GetString()}");
+    }
+    static async Task DumpLabels(HttpClient http, string owner, string repo)
+    {
+        Console.WriteLine($"=== Labels for {owner}/{repo} ===");
+        int page = 1;
+        while (true)
+        {
+            string url = $"https://api.github.com/repos/{owner}/{repo}/labels?per_page=100&page={page}";
+            var resp = await http.GetAsync(url);
+            resp.EnsureSuccessStatusCode();
+
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+            var arr = doc.RootElement.EnumerateArray().ToList();
+            if (arr.Count == 0)
+                break;
+            foreach (var label in arr)
+                Console.WriteLine($"- {label.GetProperty("name").GetString()}");
+            page++;
+        }
+    }
+
+    static async Task<bool> HandleDumpIfRequested(string[] args)
+    {
+        // Must have owner + repo + at least one more arg
+        if (args.Length < 3)
+            return false;
+
+        // Look for -dump anywhere
+        bool wantsDump = args.Any(a => a.Equals("-dump", StringComparison.OrdinalIgnoreCase));
+        if (!wantsDump)
+            return false;
+
+        string owner  = args[0];
+        string repo   = args[1];
+        string? token = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+        if (string.IsNullOrEmpty(token))
+        {
+            Console.WriteLine("Environment variable GITHUB_TOKEN is missing.");
+            return true;
+        }
+
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.Add ( new ProductInfoHeaderValue("IssueCrawler", "1.0"));
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        await DumpIssueTypes(http, owner, repo);
+        await DumpLabels(http, owner, repo);
+
+        return true; // tell Main to exit
+    }
+
+    public static async Task Main(string[] args)
     {
         if (args.Length < 3)
         {
             Console.WriteLine("Usage: crawler.exe <owner> <repo> <oldestDate in yyyy-MM-dd format>");
+            Console.WriteLine("Or:    crawler.exe <owner> <repo> -dump");
             return;
         }
+
+        if (await HandleDumpIfRequested(args))
+            return;
+
         DateTime oldest = DateTime.Parse(args[2]);
         string owner    = args[0];
         string repo     = args[1];
@@ -20,6 +119,8 @@ class Program
             Console.WriteLine("Environment variable GITHUB_TOKEN is missing.");
             return;
         }
+
+        string[] bugTokens = args[3..];
 
         string   bugCsv = "bugs.csv";
         string otherCsv = "everything_else.csv";
@@ -56,6 +157,7 @@ class Program
                     number
                     createdAt
                     closedAt
+                    issueType { name }
                     labels(first: 20) {
                       nodes { name }
                     }
@@ -78,20 +180,22 @@ class Program
             using var doc = JsonDocument.Parse(json);
             var root      = doc.RootElement;
             if (root.TryGetProperty("errors", out var errs))
-            {   // Check for GraphQL errors
+            {
                 Console.WriteLine("GraphQL error:");
                 Console.WriteLine(errs.ToString());
                 return;
             }
             var data = root.GetProperty("data");
             if (data.ValueKind == JsonValueKind.Null || data.GetProperty("repository").ValueKind == JsonValueKind.Null)
-            {   // Check that data.repository is not null
+            {
                 Console.WriteLine($"Repository '{owner}/{repo}' not found.");
                 return;
             }
-            var issues    = data.GetProperty("repository").GetProperty("issues");
+
+            var issues  = data.GetProperty("repository").GetProperty("issues");
             hasNextPage = issues.GetProperty("pageInfo").GetProperty("hasNextPage").GetBoolean();
-            cursor        = issues.GetProperty("pageInfo").GetProperty("endCursor").GetString();
+            cursor      = issues.GetProperty("pageInfo").GetProperty("endCursor").GetString();
+
             foreach (var issue in issues.GetProperty("nodes").EnumerateArray())
             {
                 int number = issue.GetProperty("number").GetInt32();
@@ -109,19 +213,13 @@ class Program
                 allWriter.WriteLine($"{number},{created},{closed}");
                 ++total;
 
-                bool isBug = false;
-                foreach (var label in issue.GetProperty("labels").GetProperty("nodes").EnumerateArray())
+                // NEW: bug classification using intersection
+                if (GetLabelNames    (issue).Intersect(bugTokens, StringComparer.OrdinalIgnoreCase).Any() ||
+                    GetIssueTypeNames(issue).Intersect(bugTokens, StringComparer.OrdinalIgnoreCase).Any() )
                 {
-                    string? labelName = label.GetProperty("name").GetString();
-                    if (labelName != null && labelName.Equals("bug", StringComparison.OrdinalIgnoreCase))
-                    {
-                        isBug = true;
-                        ++bugs;
-                        break;
-                    }
-                }
-                if (isBug)
                     bugWriter.WriteLine($"{number},{created},{closed}");
+                    ++bugs;
+                }
                 else
                     otherWriter.WriteLine($"{number},{created},{closed}");
             }
