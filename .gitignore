@@ -366,3 +366,6 @@ FodyWeavers.xsd
 *.csv
 /microsoft
 /tensorflow
+/llvm
+/ziglang
+/runs
