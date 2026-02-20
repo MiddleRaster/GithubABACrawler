@@ -43,9 +43,15 @@ class Program
         var resp    = await http.PostAsync("https://api.github.com/graphql", content);
         resp.EnsureSuccessStatusCode();
 
-        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-        var nodes = doc.RootElement.GetProperty("data").GetProperty("repository").GetProperty("issueTypes").GetProperty("nodes");
-        foreach (var n in nodes.EnumerateArray())
+        using var doc      = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var repoElem       = doc.RootElement.GetProperty("data").GetProperty("repository");
+        var issueTypesProp = repoElem.GetProperty("issueTypes");
+        if (issueTypesProp.ValueKind == JsonValueKind.Null)
+        {
+            Console.WriteLine("(This repository does not use issueTypes)");
+            return;
+        }
+        foreach (var n in issueTypesProp.GetProperty("nodes").EnumerateArray())
             Console.WriteLine($"- {n.GetProperty("name").GetString()}");
     }
     static async Task DumpLabels(HttpClient http, string owner, string repo)
@@ -158,7 +164,7 @@ class Program
                     createdAt
                     closedAt
                     issueType { name }
-                    labels(first: 20) {
+                    labels(first: 100) {
                       nodes { name }
                     }
                   }
