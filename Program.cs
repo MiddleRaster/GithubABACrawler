@@ -104,17 +104,24 @@ class Program
         return true; // tell Main to exit
     }
 
+    private static void Usage()
+    {
+        Console.WriteLine("Usage: crawler.exe <owner> <repo> <oldestDate in yyyy-MM-dd format> <bugToken1> [bugToken2] ...");
+        Console.WriteLine("   or: crawler.exe <owner> <repo> -dump");
+    }
+
     public static async Task Main(string[] args)
     {
-        if (args.Length < 3)
-        {
-            Console.WriteLine("Usage: crawler.exe <owner> <repo> <oldestDate in yyyy-MM-dd format>");
-            Console.WriteLine("Or:    crawler.exe <owner> <repo> -dump");
+        if (args.Length < 3) {
+            Usage();
             return;
         }
-
         if (await HandleDumpIfRequested(args))
             return;
+        if (args.Length < 4) {
+            Usage();
+            return;
+        }
 
         DateTime oldest = DateTime.Parse(args[2]);
         string owner    = args[0];
@@ -219,7 +226,6 @@ class Program
                 allWriter.WriteLine($"{number},{created},{closed}");
                 ++total;
 
-                // NEW: bug classification using intersection
                 if (GetLabelNames    (issue).Intersect(bugTokens, StringComparer.OrdinalIgnoreCase).Any() ||
                     GetIssueTypeNames(issue).Intersect(bugTokens, StringComparer.OrdinalIgnoreCase).Any() )
                 {
